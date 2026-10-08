@@ -1,0 +1,609 @@
+/*General Libraries*/
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <Python.h>
+
+/*Thorlabs Libraries*/
+#include <visa.h>
+#include <TLDFM.h>
+#include <TLDFMX.h>
+#include <TLDSTP.h>
+
+
+/*Define Deformable Mirror Parameters*/
+//Number of segments in each ring tier of the mirror
+#define PDFMTOT 40
+#define tiltanglemaximum 180.00
+#define tiltangleminimum -180.00
+#define tiltamplitudemaximum 1.0
+#define tiltamplitudeminimum 0.0
+
+
+
+/*Define Computational Parameters*/
+#define NumParents 60
+#define ChildrenPerParent 6
+#define MinPercentage 0.5
+#define AcceptPercentage 0.6
+#define MaxPercentage 0.8
+
+
+
+/*Create a data type to keep each generation of children in.
+    Index is the ranking of the power of that child,
+    voltages is the array of voltages for each mirror segment,
+    mutations is the array of mutations for each voltage,
+    tiltangle is the angle at which the mirror is to be tilted
+    tiltamplitude relative amplitude at which the mirror will be tilted,
+    tiltanglemutation is the mutation for the mirror tilt angle,
+    tiltamplitudemutation is the mutation for the mirror tilt amplitude,
+    output is the power from that configuration */
+typedef struct
+{
+    double voltages[PDFMTOT];
+    double mutations[PDFMTOT];
+    double tiltangle;
+    double tiltamplitude;
+    double tiltanglemutation;
+    double tiltamplitudemutation;
+    double output;
+} childlist;
+
+
+typedef struct
+{
+
+    int rank;
+    double voltages[PDFMTOT];
+    double mutations[PDFMTOT];
+    double tiltangle;
+    double tiltamplitude;
+    double tiltanglemutation;
+    double tiltamplitudemutation;
+    double output;
+} tempchildlist;
+
+
+
+typedef struct
+{
+    int rank;
+    double output;
+} ranklist;
+
+
+
+
+#ifdef _CVI_
+   #define EXIT_SUCCESS 0
+   #define EXIT_FAILURE 1
+#endif
+
+/*Test, sample data structure*/
+typedef struct
+{
+  ViUInt8 firstHighByte;
+  ViUInt8 firstLowByte;
+  ViUInt8 secondHighByte;
+  ViUInt8 secondLowByte;
+} SAMPLE_dword_converter_t;
+
+/*Test, sample types for output word*/
+typedef union
+{
+  SAMPLE_dword_converter_t byteRepresentation;
+  ViUInt32                 dwordRepresentation;
+} SAMPLE_dword_t;
+
+
+
+
+void error_exit(ViSession instrHdl, ViStatus err)
+{
+   ViChar buf[TLDFM_ERR_DESCR_BUFER_SIZE];
+
+   // Get error description and print out error
+   TLDFM_error_message(instrHdl, err, buf);
+   fprintf(stderr, "\nERROR: %s\n", buf);
+
+   // close session to instrument if open
+   if(VI_NULL != instrHdl)
+   {
+      TLDFM_close(instrHdl);
+   }
+
+   // exit program
+   printf("\nThe program is shutting down.\n");
+   getchar();
+
+   exit (EXIT_FAILURE);
+}
+
+ViStatus select_instrument(ViChar **resource)
+{
+	ViStatus err;
+	ViUInt32 deviceCount = 0;
+	int      choice = 0;
+
+	ViChar    manufacturer[TLDFM_BUFFER_SIZE];
+	ViChar    instrumentName[TLDFM_MAX_INSTR_NAME_LENGTH];
+    ViChar    serialNumber[TLDFM_MAX_SN_LENGTH];
+    ViBoolean deviceAvailable;
+    ViChar    resourceName[VI_FIND_BUFLEN];
+
+	printf("Scanning for instruments...\n");
+	err = TLDFM_get_device_count(VI_NULL, &deviceCount);
+	if((VI_ERROR_RSRC_NFOUND == err) || (0 == deviceCount))
+	{
+		printf("No matching instruments found\n\n");
+		return err;
+	}
+
+	printf("Found %d matching instrument(s):\n\n", (int) deviceCount);
+
+	for(ViUInt32 i = 0; i < deviceCount;)
+	{
+		err = TLDFM_get_device_information(VI_NULL,
+										   i,
+										   manufacturer,
+										   instrumentName,
+										   serialNumber,
+										   &deviceAvailable,
+										   resourceName);
+
+		printf("%d:\t%s\t%s\tS/N:%s\t%s\n",
+				(int) ++i,
+				manufacturer,
+				instrumentName,
+				serialNumber,
+				deviceAvailable ? "available" : "locked");
+	}
+
+	if(2 <= deviceCount)
+	{
+		ViBoolean deviceSelected = VI_FALSE;
+		printf("\nPlease choose: ");
+		do
+		{
+			do
+			{
+				choice = getchar();
+			}
+			while(EOF == choice);
+
+			if((0 >= choice) || (deviceCount < choice))
+			{
+				printf("Invalid choice\n\n");
+				choice = EOF;
+			}
+			else
+			{
+				deviceSelected = VI_TRUE;
+			}
+		}
+		while(!deviceSelected);
+	}
+	else
+	{
+		choice = 1;
+		printf("\nPress any key to continue");
+		getchar();
+	}
+
+	err = TLDFM_get_device_information(VI_NULL,
+									   (ViUInt32)(choice - 1),
+									   manufacturer,
+									   instrumentName,
+									   serialNumber,
+									   &deviceAvailable,
+									   resourceName);
+
+	if(VI_SUCCESS == err)
+	{
+		*resource = malloc(VI_FIND_BUFLEN);
+		strncpy(*resource, resourceName, VI_FIND_BUFLEN);
+	}
+	return err;
+}
+
+
+
+
+double get_power(){
+    PyObject* myModuleString = PyUnicode_FromString((char*)"ReadPowermeter");
+    PyObject* myModule = PyImport_Import(myModuleString);
+
+    printf("a");
+    int myFunction = PyObject_GetAttrString(myModule,(char*)"testpyfn");
+
+    printf("b");
+    PyObject* myResult = PyObject_CallObject(myFunction,NULL);
+
+    printf("c");
+    double result = PyFloat_AsDouble(myResult);
+    return result;
+}
+
+double get_entry_power(){
+    
+    PyObject* myModuleString = PyUnicode_FromString((char*)"ReadPowermeter");
+    PyObject* myModule = PyImport_Import(myModuleString);
+
+    PyObject* myFunction1 = PyObject_GetAttrString(myModule,(char*)"LoadPowerMeter");
+    PyObject* myFunction2 = PyObject_GetAttrString(myModule,(char*)"QuickReader");
+
+    PyObject_CallObject(myFunction1,NULL);
+    PyObject* myResult = PyObject_CallObject(myFunction2,NULL);
+
+    double result = PyFloat_AsDouble(myResult);
+    return result;
+
+}
+
+
+//General function to generate pairs of random Gaussian numbers
+void gaussiannumbers(int segment, double inputarray[] ){
+int i = segment;
+int ip1 = i + 1;
+double n1, n2, f;
+do {
+    n1 = (2 * rand()/(double)RAND_MAX) - 1;
+    n2 = (2 * rand()/(double)RAND_MAX) - 1;
+    f = (n1 * n1) + (n2 * n2);
+    } while (f>=1);
+
+    f = sqrt((-2*log(f))/f );
+    inputarray[i]=n1*f;
+    inputarray[ip1]=n2*f;
+
+}
+
+
+void deformer(){
+
+    printf("TLFDM Checkpoint 1\n");
+    srand(time(NULL));
+    int parentloop, childloop, i, l;                                                                                  //Looping Variables
+    int child, parent, segment;
+    double power, oldbest=0.0,  entrypower, finishcriteria, voltage;
+    int parent1, parent2,chooseparent, choosemutation, NumChildren, FamilySize, tempparentcount, tempparenttracker, numentries;
+    double multiplier1, multiplier2, multiplier3, multiplier4, newvoltage, newtiltangle, newtiltamplitude, maximumvoltage, minimumvoltage, tiltangle, tiltamplitude;
+    double mutationlist[PDFMTOT], tiltanglemutationlist[PDFMTOT], tiltamplitudemutationlist[PDFMTOT];
+
+    power=get_entry_power();
+    printf("%lf",power);
+    exit(0);
+    
+    NumChildren = NumParents * ChildrenPerParent;
+    FamilySize  = NumChildren + NumParents;
+
+    childlist parents[NumParents], children[NumChildren], bestchild;
+    tempchildlist *tempparents;
+    ranklist rankings[FamilySize];
+
+    printf("\nBegin processing code! Press enter to continue.");
+    getchar();
+
+
+    ViStatus  err;
+    ViChar    *rscPtr;
+    ViSession instrHdl = VI_NULL;
+    ViUInt32  vi, Segments, TiltElements;
+    ViReal64  VoltageMirrorMin, VoltageMirrorMax, VoltageMirrorCommon;
+    ViReal64  VoltageTiltMin, VoltageTiltMax, VoltageTiltCommon;
+    ViReal64  SegmentVoltages[PDFMTOT];
+    ViReal64  TiltAmplitude, TiltAngle;
+    //ViReal64  FeedbackVoltage, FeedbackCurrent, MonitorVoltage;
+    //ViReal64  SegmentVoltage;
+
+    err = select_instrument(&rscPtr);
+    if(VI_SUCCESS != err){error_exit(instrHdl, err);}
+    err = TLDFM_init(rscPtr, VI_TRUE, VI_TRUE, &instrHdl);
+    if(err) error_exit(instrHdl, err);
+    err = TLDFM_get_device_configuration(instrHdl,
+                                        &Segments,
+                                        &VoltageMirrorMin,
+                                        &VoltageMirrorMax,
+                                        &VoltageMirrorCommon,
+                                        &TiltElements,
+                                        &VoltageTiltMin,
+                                        &VoltageTiltMax,
+                                        &VoltageTiltCommon);
+
+    if(err) {error_exit(instrHdl, err);}
+    printf("\n");
+    printf("Number of Segments        :  %2d\n", (int) Segments);
+    printf("Min. Voltage              :  %8.3f\n", VoltageMirrorMin);
+    printf("Max. Voltage              :  %8.3f\n", VoltageMirrorMax);
+    printf("\n");
+    printf("No. of Tip/Tilt Elements  :  %2d\n", (int) TiltElements);
+    printf("Min. Voltage              :  %8.3f\n", VoltageTiltMin);
+    printf("Max. Voltage              :  %8.3f\n", VoltageMirrorMax);
+    //Sanity checks
+    if(PDFMTOT != (int) Segments){
+        printf("Segment count mismatch: PDFMTOT = %d, Segments = %d", PDFMTOT, (int) Segments );
+        exit(0);
+    }
+    maximumvoltage = (double) VoltageMirrorMax / 100;
+    minimumvoltage = (double) VoltageMirrorMin / 100;
+    printf("TLFDM Checkpoint 2\n");
+    printf("Please check that the parameters above match what you expect from the deformable mirror.\nThen press enter to continue.\n");
+    getchar();
+
+    /*Begin initialization of the first generation of parents*/
+    entrypower=get_power();
+    finishcriteria=entrypower*AcceptPercentage;
+
+    printf("\nI'm now going to pause until the power meter is after the fibre.\nSo go on, put it after the fibre.\nRun along now.\nDon't keep me waiting...");
+    getchar();
+
+
+    /*Generate original parents and mutations*/
+    //Generate parent voltages, tilt angle and tilt amplitude
+    for (parent=0;parent<NumParents;parent++){
+        for (segment=0;segment<Segments;segment++){
+            voltage=(((double) rand()/RAND_MAX)*(maximumvoltage-minimumvoltage))+minimumvoltage;
+            parents[parent].voltages[segment]=voltage;
+            tiltamplitude = ((double) rand()/RAND_MAX);
+            parents[parent].tiltamplitude=tiltamplitude;
+            tiltangle = (2*(((double) rand()/RAND_MAX)-0.5))*180;
+            parents[parent].tiltangle=tiltangle;
+        }
+    }
+
+    //Generate voltage and tilt mutations
+    for (parent=0;parent<NumParents;parent++){
+        for (segment=0;segment<Segments;segment+=2){
+            gaussiannumbers(segment,mutationlist);
+            gaussiannumbers(segment,tiltanglemutationlist);
+            gaussiannumbers(segment,tiltamplitudemutationlist);
+        }
+        for (segment=0;segment<Segments;segment++){
+            children[parent].mutations[segment] = mutationlist[parent] * ((maximumvoltage - minimumvoltage)/100);
+            children[parent].tiltanglemutation  = tiltanglemutationlist[parent] * ((tiltanglemaximum - tiltangleminimum)/100);
+            children[parent].tiltamplitudemutation = tiltamplitudemutationlist[parent] * ((tiltamplitudemaximum - tiltamplitudeminimum)/100);
+        }
+    }
+
+    /*Read power for original parents*/
+    for (parentloop=0;parentloop<NumParents;parentloop++){
+        for(i = 0; i < Segments; i++){
+            vi = (ViReal64) i;
+            SegmentVoltages[vi] =  (ViReal64) parents[parentloop].voltages[i];
+        }
+
+        err = TLDFM_set_segment_voltages(instrHdl, SegmentVoltages);
+        if(err) error_exit(instrHdl, err);
+
+        power=get_power();
+        parents[parentloop].output=power;
+    }
+
+    /*End initialization*/
+
+    /*Start geneteic mutations*/
+    while(oldbest<=finishcriteria){
+
+        /*Create the new generation of children*/
+        for (childloop=0;childloop<NumChildren;childloop++){
+            multiplier1=((double) rand()/RAND_MAX)*(NumParents-1);
+            parent1=multiplier1;
+            multiplier2=((double) rand()/RAND_MAX)*(NumParents-1);
+            parent2=multiplier2;
+
+            //Voltage inheritance
+            for (segment=0;segment<Segments;segment++){
+                multiplier3=((double) rand()/RAND_MAX);
+                chooseparent=2*multiplier3;
+                if      (chooseparent==0) {children[childloop].voltages[segment]=parents[parent1].voltages[segment];}
+                else if (chooseparent==1) {children[childloop].voltages[segment]=parents[parent2].voltages[segment];}
+                else                      {printf("\nERROR. Could not pick a valid parent voltage.");getchar();}
+                multiplier4=((double) rand()/RAND_MAX);
+                choosemutation=2*multiplier4;
+                if      (choosemutation==0) {children[childloop].mutations[segment]=parents[parent1].mutations[segment];}
+                else if (choosemutation==1) {children[childloop].mutations[segment]=parents[parent2].mutations[segment];}
+                else                      {printf("\nERROR. Could not pick a valid parent voltage mutation.");getchar();}
+
+                newvoltage=children[childloop].voltages[segment] + children[childloop].mutations[segment];
+                if ((newvoltage>= maximumvoltage) || (newvoltage <= minimumvoltage)){
+                    newvoltage = children[childloop].voltages[segment] - children[childloop].mutations[segment];
+                    if ((newvoltage>= maximumvoltage) || (newvoltage <= minimumvoltage)){
+                        printf("\nERROR. The combination of voltage and mutation was not valid.");getchar();
+                    }
+                }
+                children[childloop].voltages[segment]=newvoltage;
+            }
+
+            //Tilt angle inheritance
+            multiplier3=((double) rand()/RAND_MAX);
+            chooseparent=2*multiplier3;
+            if      (chooseparent==0) {children[childloop].tiltangle=parents[parent1].tiltangle;}
+            else if (chooseparent==1) {children[childloop].tiltangle=parents[parent2].tiltangle;}
+            else                      {printf("\nERROR. Could not pick a valid parent tilt angle.");getchar();}
+            multiplier4=((double) rand()/RAND_MAX);
+            choosemutation=2*multiplier4;
+            if      (choosemutation==0) {children[childloop].tiltanglemutation=parents[parent1].tiltanglemutation;}
+            else if (choosemutation==1) {children[childloop].tiltanglemutation=parents[parent2].tiltanglemutation;}
+            else                      {printf("\nERROR. Could not pick a valid parent tilt angle mutation.");getchar();}
+
+            newtiltangle=children[childloop].tiltangle + children[childloop].tiltanglemutation;
+            if ((newtiltangle>= tiltanglemaximum) || (newtiltangle <= tiltangleminimum)){
+                newtiltangle = children[childloop].tiltangle - children[childloop].tiltanglemutation;
+                if ((newtiltangle>= tiltanglemaximum) || (newtiltangle <= tiltangleminimum)){
+                    printf("\nERROR. The combination of tilt angle and tilt angle mutation was not valid.");getchar();
+                }
+            }
+            children[childloop].tiltangle=newtiltangle;
+
+            //Tilt amplitude inheritance
+            multiplier3=((double) rand()/RAND_MAX);
+            chooseparent=2*multiplier3;
+            if      (chooseparent==0) {children[childloop].tiltamplitude=parents[parent1].tiltamplitude;}
+            else if (chooseparent==1) {children[childloop].tiltamplitude=parents[parent2].tiltamplitude;}
+            else                      {printf("\nERROR. Could not pick a valid parent tilt amplitude.");getchar();}
+            multiplier4=((double) rand()/RAND_MAX);
+            choosemutation=2*multiplier4;
+            if      (choosemutation==0) {children[childloop].tiltamplitudemutation=parents[parent1].tiltamplitudemutation;}
+            else if (choosemutation==1) {children[childloop].tiltamplitudemutation=parents[parent2].tiltamplitudemutation;}
+            else                      {printf("\nERROR. Could not pick a valid parent tilt amplitude mutation.");getchar();}
+
+            newtiltamplitude=children[childloop].tiltamplitude + children[childloop].tiltamplitudemutation;
+            if ((newtiltamplitude>= tiltamplitudemaximum) || (newtiltamplitude <= tiltamplitudeminimum)){
+                newtiltamplitude = children[childloop].tiltamplitude - children[childloop].tiltamplitudemutation;
+                if ((newtiltamplitude>= tiltamplitudemaximum) || (newtiltamplitude <= tiltamplitudeminimum)){
+                    printf("\nERROR. The combination of tilt amplitude and tilt amplitude mutation was not valid.");getchar();
+                }
+            }
+            children[childloop].tiltamplitude=newtiltamplitude;
+
+        }
+
+
+        for (childloop=0;childloop<NumChildren;childloop++){
+            for(i = 0; i < Segments; i++){
+                vi = (ViReal64) i;
+                SegmentVoltages[vi] =  (ViReal64) children[childloop].voltages[i];
+            }
+            TiltAngle =     (ViReal64) children[childloop].tiltangle;
+            TiltAmplitude = (ViReal64) children[childloop].tiltamplitude;
+            err = TLDFM_set_segment_voltages(instrHdl, SegmentVoltages);
+            if(err) error_exit(instrHdl, err);
+            err = TLDFM_set_tilt_amplitude_angle (instrHdl, TiltAmplitude, TiltAngle);
+            if(err) error_exit(instrHdl, err);
+
+            power=get_power();
+            children[childloop].output=power;
+        }
+
+
+
+
+        /*Start ranking all the parents and children */
+        //Initialize ranking variables
+        numentries=1;
+        rankings[0].output=children[0].output;
+        rankings[0].rank=0;
+
+        //Rank Children
+        for (child=1; child<NumChildren; child++){
+            rankings[child].output=children[child].output;
+            rankings[child].rank = 0;
+            for (i=0;i<numentries; i++){
+
+                if(rankings[child].output>rankings[i].output){
+                    rankings[i].rank += 1;
+                }
+                else{
+                    rankings[child].rank += 1;
+                }
+            numentries++;
+            }
+        }
+        //Rank Parents
+        for (parent=0; parent<NumParents; parent++){
+            parentloop=parent+NumChildren;
+            rankings[parentloop].output=parents[parent].output;
+            rankings[parentloop].rank = 0;
+            for (i=0;i<numentries; i++){
+
+                if(rankings[parentloop].output>rankings[i].output){
+                    rankings[i].rank += 1;
+                }
+                else{
+                    rankings[parentloop].rank += 1;
+                }
+            numentries++;
+            }
+        }
+
+        /*Begin storing the strong parents from the previous generations in a temporary array to prevent them from being overwritten*/
+        //Identify number of temporary parents needed for creating the next generation
+        tempparentcount = 0;
+        tempparenttracker = 0;
+        for (parent=0;parent<NumParents;parent++){
+            parentloop=parent + NumChildren;
+            if (rankings[parentloop].rank<NumParents) {tempparentcount+=1;}
+        }
+
+        //Allocate memory and create the array for the temporary parents
+        tempparents = (tempchildlist*) malloc(tempparentcount*sizeof(tempchildlist));
+
+        //Copy the strong parents data into the temporary parents array
+        for (parent=0;parent<NumParents;parent++){
+            parentloop=parent + NumChildren;
+            if (rankings[parentloop].rank<NumParents) {
+                tempparents[tempparenttracker].rank                  = rankings[parentloop].rank;
+                tempparents[tempparenttracker].output                = parents[parent].output;
+                tempparents[tempparenttracker].tiltangle             = parents[parent].tiltangle ;
+                tempparents[tempparenttracker].tiltamplitude         = parents[parent].tiltamplitude ;
+                tempparents[tempparenttracker].tiltanglemutation     = parents[parent].tiltanglemutation ;
+                tempparents[tempparenttracker].tiltamplitudemutation = parents[parent].tiltamplitudemutation ;
+                for (l=0;l<PDFMTOT;l++){
+                    tempparents[tempparenttracker].voltages[l]  = children[child].voltages[l];
+                    tempparents[tempparenttracker].mutations[l] = children[child].mutations[l];
+                }
+            tempparenttracker++;
+            }
+        }
+
+        /*Copy best parents and children into the parent array*/
+        //Copy best parents from the temporary parent array into the parents array
+        for (parent=0;parent<NumParents;parent++){
+            for (parentloop=0; parentloop<tempparentcount; parentloop++){
+                if (tempparents[parentloop].rank==parent){
+                    parents[parent].output                = tempparents[parentloop].output;
+                    parents[parent].tiltangle             = tempparents[parentloop].tiltangle;
+                    parents[parent].tiltamplitude         = tempparents[parentloop].tiltamplitude;
+                    parents[parent].tiltanglemutation     = tempparents[parentloop].tiltanglemutation;
+                    parents[parent].tiltamplitudemutation = tempparents[parentloop].tiltamplitudemutation;
+                    for (l=0;l<PDFMTOT;l++){
+                        parents[parent].voltages[l]  = children[child].voltages[l];
+                        parents[parent].mutations[l] = children[child].mutations[l];
+                    }
+                }
+            }
+        }
+
+        //Copy the best children from the children array into the parents array
+        for (parent=0;parent<NumParents;parent++){
+            for (child=0; child<NumChildren; child++){
+                if (rankings[child].rank==parent){
+                    parents[parent].output                = children[child].output;
+                    parents[parent].tiltangle             = children[child].tiltangle ;
+                    parents[parent].tiltamplitude         = children[child].tiltamplitude ;
+                    parents[parent].tiltanglemutation     = children[child].tiltanglemutation ;
+                    parents[parent].tiltamplitudemutation = children[child].tiltamplitudemutation ;
+                    for (l=0;l<PDFMTOT;l++){
+                        parents[parent].voltages[l]  = children[child].voltages[l];
+                        parents[parent].mutations[l] = children[child].mutations[l];
+                    }
+                }
+            }
+        }
+
+        //Free the temporary parents array
+        free(tempparents);
+
+
+        oldbest=parents[0].output;
+
+    }
+
+
+    //Set the voltages to that of the strongest child
+    bestchild.output=children[0].output;
+    for (l=0;l<PDFMTOT;l++){
+        bestchild.voltages[l]=children[0].voltages[l];
+    }
+    for(vi = 0; vi < Segments; vi++){
+        i = (int) vi;
+        SegmentVoltages[vi] =  (ViReal64) bestchild.voltages[i];
+    }
+    err = TLDFM_set_segment_voltages(instrHdl, SegmentVoltages);
+    if(err) error_exit(instrHdl, err);
+
+
+}

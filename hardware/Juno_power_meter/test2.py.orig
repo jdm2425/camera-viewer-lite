@@ -1,0 +1,18 @@
+# import bessel_optimisation
+# print("Starting step 1 out of 3.")
+# beam = bessel_optimisation.bessel(webcam_index="3.png", display = False)
+# beam = bessel_optimisation.bessel("circles.png", display = False)
+# print("Starting step 2 out of 3.")
+# beam.decompose(no_roots = 25, max_order = 25, display = False)
+# print("Starting step 3 out of 3.")
+# beam.metric()
+# beam.plot_reconstructed()
+# print("Finished!")
+print(beam.metric())
+print("Finished!")
+'''
+
+
+import spot_optimisation
+beam = spot_optimisation.spot(webcam_index=0, plot=False)
+beam.plot()

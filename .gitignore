@@ -1,0 +1,31 @@
+# Local Python/build environments
+.venv/
+venv/
+env/
+
+# Generated release output (published through GitHub Releases instead)
+artifacts/
+build/
+dist/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE, OS, and local assistant state
+.vscode/
+.idea/
+.codex/
+.agents/
+.DS_Store
+Thumbs.db
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.partial
+

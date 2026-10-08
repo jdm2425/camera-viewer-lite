@@ -1,0 +1,253 @@
+import numpy as np
+from cv2 import *
+import matplotlib.pyplot as plt
+import time
+
+class image_processing:
+
+    def __init__(self, webcam_index=0, width=320, height=240, 
+                 exposure=-5, gain=200, autodisconnect=True):
+        """Loads image."""
+        
+        #To load an existing file (e.g. for testing purposes), use:
+        #source = imread(file)
+        #self.image = source
+        
+        #To acquire an image from an available webcam, use:
+        self.cam=VideoCapture(webcam_index)
+        cam = self.cam
+        cam.set(3, width)
+        cam.set(4, height)
+        cam.set(13, gain)
+        cam.set(15, exposure)
+        
+        self.read()
+       
+        if autodisconnect: self.disconnect()
+
+
+    def read(self):
+        bin, source = self.cam.read()
+        if source is None:
+            raise Exception("The image was not loaded. Check camera connection.")
+        else:
+            img = source.astype(np.float32) # Ensuring correct type
+            self.image = np.flip(img, 0) # Corrects y being upside down
+        
+    def disconnect(self):
+        self.cam.release()
+  
+    def sharecamera(self):
+        return self.cam
+
+              
+    def image2array(self, image):
+        """
+        Converts an image into an array containing the brightness of each
+        pixel.
+        """
+        array = np.zeros((image.shape[0], image.shape[1]))
+        
+        for i in range(image.shape[0]):
+            for j in range(image.shape[1]):
+                for n in range(3):
+                    array[i][j] += image[i][j][n]/3
+        
+        return array
+        
+    def makesquare(self, input):
+        """Pads array with zeros until it is square."""
+        diff = int(input.shape[0] - input.shape[1])
+        if diff < 0:
+            final = np.vstack(
+                    (input, np.zeros((abs(diff), input.shape[1], 
+                                      input.shape[2]))))
+        if diff > 0:
+            final = np.hstack(
+                    (input, np.zeros((input.shape[0], diff, 
+                                      input.shape[2]))))
+        return final
+    
+    def find_centre(self, input):
+        """Finds the centre of mass of the image."""
+        x_mean = np.average(np.array([i for i in range(input.shape[1])]), 
+                            weights = np.array([np.sum(input[:,j])+0.01
+                                                for j in range(input.shape[1])]))
+        y_mean = np.average(np.array([i for i in range(input.shape[0])]), 
+                            weights = np.array([np.sum(input[j])+0.01 
+                                                for j in range(input.shape[0])]))
+        return int(round(x_mean)), int(round(y_mean))
+        
+    def peak_selector(self, input_array):
+        """Identifies one of the peaks and replaces the other one with zeros."""
+        new_array = np.zeros((input_array.shape[0], input_array.shape[1]))
+        i, j = 0, 0
+        fifthrlen=int(input_array.shape[1]/5)
+        frls=slice(fifthrlen)
+        new_array[:][frls]=input_array[i][frls]
+        new_array[new_array<0.04*np.amax(input_array)]=0
+        while i < input_array.shape[0]:
+            while j < input_array.shape[1]:
+                
+                new_array[i][j] = input_array[i][j]
+                if input_array[i][j] < 0.04*np.amax(input_array):
+                    temp_array = input_array[i][j+1:]
+                    k = 0
+                    difference = 0
+                    while k < temp_array.size:
+                        if temp_array[k] > 0.5*np.amax(input_array):
+                            difference = int((k-j)/2)
+                            k = temp_array.size
+                        else:
+                            k += 1
+                    if difference != 0:
+                        for l in range(difference):
+                            new_array[i][j+l] = input_array[i][j+l]
+                    else:
+                        if temp_array.size != 0:
+                            if np.amax(temp_array) > 0.06*np.amax(input_array):
+                                p=np.argmax(temp_array)
+                                secslice=slice(j,j+p)
+                                new_array[i][secslice] = input_array[i][secslice]
+                                # for p in range(np.argmax(temp_array)):
+                                    # new_array[i][j+p] = input_array[i][j+p]
+                                m = 0
+                                while m < (temp_array.size - np.argmax(temp_array)):
+                                    if input_array[i][j+np.argmax(
+                                            temp_array)+m] > 0.06*np.amax(input_array):
+                                        new_array[i][j+np.argmax(
+                                                temp_array)+m] = input_array[i][j+np.argmax(temp_array)+m]
+                                        m += 1
+                                    else:
+                                        m = (temp_array.size - np.argmax(temp_array))
+                    j = input_array.shape[1]
+
+                else:
+                    j += 1
+            i += 1
+            j = 0
+        return new_array
+                
+    def cartesian2polar(self, input_array, weighted_centre = False, 
+                        inverse = False, zoom = False):
+        """Converts array from Cartesian to polar coordinates, or vice-versa."""
+        if inverse is False:
+            if weighted_centre is True:
+                x, y = self.find_centre(input_array)
+            else:
+                brightness_array = self.image2array(self.makesquare(self.image))
+                y, x = np.unravel_index(brightness_array.argmax(), 
+                                        brightness_array.shape)
+            if zoom is False:
+                value = np.sqrt(((input_array.shape[0]/2)**2.0)+((
+                        input_array.shape[1]/2)**2.0))
+            else:
+                counter_x = 0
+                j, i = 0, 0
+                while j < input_array.shape[0]:
+                    a = not np.any(input_array[:,j])
+                    if a is True:
+                        counter_x += 1
+                    j += 1
+                counter_y = 0
+                while i < input_array.shape[1]:
+                    a = not np.any(input_array[:,i])
+                    if a is True:
+                        counter_y += 1
+                    i += 1
+                counter = int(max(counter_x, counter_y)[0][0])
+                self.area = counter_x*counter_y*np.pi
+                ratio = counter/len(input_array)
+                if ratio != 0:
+                    value = int(ratio*np.sqrt(((input_array.shape[0]/2)**2.0)+((
+                            input_array.shape[1]/2)**2.0)))
+                else:
+                    value = int(min(input_array.shape[0]/2, 
+                                    input_array.shape[1]/2)[0][0]-5)
+            polar_image = linearPolar(input_array, (x, y), value, 
+                                      WARP_FILL_OUTLIERS)
+            polar_image = polar_image.astype(np.uint8)
+            return polar_image
+            
+        else:
+            cartesian_image = linearPolar(input_array, (
+                    int(input_array.shape[0]/2), int(input_array.shape[1]/2)), 
+                len(input_array), WARP_INVERSE_MAP)
+            cartesian_image = cartesian_image.astype(np.uint8)
+            return cartesian_image
+            
+    def area(self):
+        return self.area
+            
+class spot(image_processing):
+    
+    def __init__(self, webcam_index=0, releasecamera=True):
+        self.instance = image_processing(webcam_index, autodisconnect = releasecamera)
+        self.releasecamera=releasecamera
+        self.processimage()
+        
+        
+    def processimage(self):
+        t0=time.time()
+        t=[t0]
+        if not self.releasecamera: self.instance.read()
+        square = self.instance.makesquare(self.instance.image)
+        polar_raw = self.instance.cartesian2polar(square)
+        polar_brightness_raw = self.instance.image2array(polar_raw)
+        t.append(time.time()-t0)
+        selected = self.instance.peak_selector(polar_brightness_raw)
+        t.append(time.time()-t0)
+        cartesian_processed = self.instance.cartesian2polar(selected, inverse = True)
+        polar_processed = self.instance.cartesian2polar(
+                cartesian_processed, weighted_centre = True, zoom = False)
+        self.image = polar_processed
+        self.area = self.instance.area
+        for i,val in enumerate(t): print("{} is  {}".format(i,val))
+        
+    def spot_area(self):
+        """Returns area of spot, approximating it as an ellipsoid."""
+        #print(self.area)
+        return self.area
+    
+    def metric(self, spot_size):
+        """
+        Returns a fitness function to be maximised.
+        A, B defined as in Nouman-ul-Haq et al., Nuclear Inst. and Methods in 
+        Physics Researchs, A 883 (2018).
+        Here we use the inverse of their metric, since we seek to maximise it rather than
+        minimise it.
+        spot_size is assumed to be in pixels.
+        """
+        
+        if not self.releasecamera: self.processimage()
+        self.inner_radius = int(spot_size)
+
+        if spot_size > self.image.shape[0] or spot_size > self.image.shape[1]:
+            raise Exception("The desired spot size is bigger than the image.")
+                
+
+        B = np.sum(self.image[:,:self.inner_radius])
+        A = np.sum(self.image[:,-(self.image.shape[1]-self.inner_radius):])
+        
+        metr = B**2/A
+        return metr
+        
+    def plot(self, spot_size = 50):
+        """Mainly for debugging purposes."""
+        metric = self.metric(spot_size)
+        r1D = np.linspace(0., 1., self.image.shape[0])
+        phi1D = np.linspace(0., 2.*np.pi, self.image.shape[0])
+        r0, phi0 = np.meshgrid(r1D, phi1D)
+
+        fig = plt.figure(1)
+        ax = fig.add_subplot(111, projection='polar')
+        ax.axis('off')
+        #ax.set_title("Focal spot metric = %g" % (metric), size=20)
+        plt.pcolormesh(phi0, r0, self.image)
+        plt.colorbar()
+        # plt.plot(0., 0., marker='*', ms=30, markerfacecolor='w', 
+             # markeredgecolor='k')
+        # circle = plt.Circle((0., 0.), self.inner_radius/self.image.shape[0], 
+                            # transform=ax.transData._b, color="red", alpha=0.4)
+        # ax.add_artist(circle)    
+        plt.show()

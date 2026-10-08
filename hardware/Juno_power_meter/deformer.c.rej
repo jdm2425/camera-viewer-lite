@@ -1,0 +1,10 @@
+--- packages/hardware/Juno_power_meter/deformer.c	
++++ packages/hardware/Juno_power_meter/deformer.c	
+@@ -229,7 +229,6 @@
+     PyObject* myModuleString = PyUnicode_FromString((char*)"ReadPowermeter");
+     PyObject* myModule = PyImport_Import(myModuleString);
+ 
+-    PyObject* myFunction = PyObject_GetAttrString(myModule,(char*)"QuickReader");
+     PyObject* myFunction = PyObject_GetAttrString(myModule,(char*)"LoadPowerMeter");
+ 
+     PyObject* myResult = PyObject_CallObject(myFunction,NULL);

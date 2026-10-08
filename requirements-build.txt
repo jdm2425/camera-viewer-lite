@@ -1,0 +1,16 @@
+# Build-time and runtime dependencies for the Windows x64 release.
+#
+# These versions match the last known working build inventory. The application
+# itself is frozen by PyInstaller, so none of these packages are needed on a
+# computer that installs or runs a release artifact.
+PyInstaller==6.22.2
+pyinstaller-hooks-contrib==2026.7
+PyQt5==5.15.11
+numpy==2.4.2
+scipy==1.17.0
+matplotlib==3.10.8
+opencv-python==4.13.0.92
+pyqtgraph==0.14.0
+pyqtgraph-extensions==0.5.9
+PyOpenGL==3.1.10
+

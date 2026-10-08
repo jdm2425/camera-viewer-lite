@@ -1,0 +1,82 @@
+name: Build and publish Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install pinned build dependencies
+        shell: pwsh
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Validate tag and source version
+        shell: pwsh
+        run: |
+          $version = (Get-Content distribution/VERSION -Raw).Trim()
+          $expectedTag = "v$version"
+          if ("${{ github.ref_name }}" -ne $expectedTag) {
+            throw "Tag '${{ github.ref_name }}' does not match distribution/VERSION '$expectedTag'."
+          }
+
+      - name: Build and test standalone release
+        shell: pwsh
+        run: .\distribution\build_release.ps1 -Python (Get-Command python).Source
+
+      - name: Prepare stable latest-download filenames
+        shell: pwsh
+        run: |
+          $version = (Get-Content distribution/VERSION -Raw).Trim()
+          Move-Item "artifacts/CameraViewer-Setup-$version-win64.exe" "artifacts/CameraViewer-Setup-win64.exe"
+          Move-Item "artifacts/CameraViewer-Portable-$version-win64.zip" "artifacts/CameraViewer-Portable-win64.zip"
+          Remove-Item "artifacts/SHA256SUMS-$version.txt"
+          $lines = foreach ($file in @(
+            "artifacts/CameraViewer-Setup-win64.exe",
+            "artifacts/CameraViewer-Portable-win64.zip"
+          )) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($file))"
+          }
+          Set-Content artifacts/SHA256SUMS.txt -Value $lines -Encoding ASCII
+
+      - name: Retain a workflow copy of the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: CameraViewer-${{ github.ref_name }}-win64
+          path: |
+            artifacts/CameraViewer-Setup-win64.exe
+            artifacts/CameraViewer-Portable-win64.zip
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            artifacts/CameraViewer-Setup-win64.exe `
+            artifacts/CameraViewer-Portable-win64.zip `
+            artifacts/SHA256SUMS.txt `
+            --title "Camera Viewer ${{ github.ref_name }}" `
+            --generate-notes `
+            --latest
+
